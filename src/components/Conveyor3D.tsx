@@ -690,9 +690,9 @@ export default function Conveyor3DScene() {
 
   return (
     <div className="relative w-full h-full select-none bg-[#0b1120]">
-      {/* ── CAMERA VIEW CONTROLS TOOLBAR ── */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5 glass-panel p-1.5 border border-slate-700/60 shadow-xl bg-slate-900/85">
-        <span className="text-[10px] text-slate-400 font-mono px-1.5 flex items-center gap-1">
+      {/* ── CAMERA VIEW CONTROLS TOOLBAR (BOTTOM RIGHT TO PREVENT OVERLAP) ── */}
+      <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1 glass-panel p-1.5 border border-slate-700/60 shadow-xl bg-slate-900/90 rounded-lg">
+        <span className="text-[10px] text-slate-400 font-mono px-1 flex items-center gap-1 hidden sm:flex">
           <Camera size={12} className="text-cyan-400" /> VIEW:
         </span>
         {(['ISOMETRIC', 'FRONT', 'TOP', 'SIDE'] as const).map(v => (
