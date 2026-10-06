@@ -81,6 +81,10 @@ interface SimulationStore {
   demoRunning: boolean;
   demoStep: number;
   demoTimer: ReturnType<typeof setTimeout> | null;
+  demoTimers: ReturnType<typeof setTimeout>[];
+  demoPhaseTitle: string;
+  demoPhaseDesc: string;
+  autoFeed: boolean;
 
   // ── Viva Mode ──
   vivaMode: boolean;
@@ -112,6 +116,8 @@ interface SimulationStore {
   togglePause: () => void;
   stepClock: () => void;
   toggleVivaMode: () => void;
+  toggleAutoFeed: () => void;
+  triggerCollision: () => void;
   setPerformanceMode: (mode: PerformanceMode) => void;
   setActiveTab: (tab: string) => void;
   clearLogs: () => void;
@@ -167,6 +173,10 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
   demoRunning: false,
   demoStep: 0,
   demoTimer: null,
+  demoTimers: [],
+  demoPhaseTitle: '',
+  demoPhaseDesc: '',
+  autoFeed: false,
 
   vivaMode: false,
   performanceMode: 'BALANCED',
@@ -195,6 +205,11 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
         ...p,
         position: p.position + CONVEYOR_SPEED_BASE * state.speed,
       })).filter(p => p.position <= 1.1); // Remove products that passed end
+
+      // Auto-feed product if continuous feed mode is active
+      if (state.autoFeed && newClock % 36 === 0) {
+        setTimeout(() => get().addProduct(), 0);
+      }
     }
 
     // ── 2. Check sensors ──
@@ -371,6 +386,7 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
     const state = get();
     // Stop demo/test if running
     if (state.demoTimer) clearTimeout(state.demoTimer);
+    state.demoTimers.forEach(t => clearTimeout(t));
     if (state.testTimer) clearTimeout(state.testTimer);
 
     set({
@@ -404,6 +420,10 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
       demoRunning: false,
       demoStep: 0,
       demoTimer: null,
+      demoTimers: [],
+      demoPhaseTitle: '',
+      demoPhaseDesc: '',
+      autoFeed: false,
       testRunning: false,
       testTimer: null,
     });
@@ -490,6 +510,22 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
   },
 
   toggleVivaMode: () => set(s => ({ vivaMode: !s.vivaMode })),
+
+  toggleAutoFeed: () => {
+    const newVal = !get().autoFeed;
+    set({ autoFeed: newVal });
+    get().addLog(newVal ? 'CONTINUOUS AUTO-FEED ACTIVATED' : 'AUTO-FEED DISABLED', 'INFO');
+  },
+
+  triggerCollision: () => {
+    set({
+      fault: true,
+      emergency: true,
+      positionSensor: true,
+      productSensor: true,
+    });
+    get().addLog('PRIORITY TEST: ALL 4 INPUTS SIMULTANEOUSLY ACTIVE (I3, I2, I1, I0)', 'WARNING');
+  },
 
   setPerformanceMode: (mode: PerformanceMode) => set({ performanceMode: mode }),
 
@@ -619,49 +655,146 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
     set({ testRunning: false, testTimer: null });
   },
 
-  // ── Auto Demo ──────────────────────────────────────────
+  // ── Auto Guided Demonstration ─────────────────────────
   startDemo: () => {
     get().reset();
     setTimeout(() => {
-      set({ demoRunning: true, demoStep: 0, running: true });
-      get().addLog('AUTO DEMO STARTED', 'INFO');
-
-      const demoSequence = [
-        { delay: 500, action: () => { get().addLog('Demo: System Reset', 'INFO'); } },
-        { delay: 1500, action: () => { get().start(); get().addLog('Demo: Start Conveyor', 'INFO'); } },
-        { delay: 3000, action: () => { get().addProduct(); get().addLog('Demo: Product Entering', 'INFO'); } },
-        { delay: 5000, action: () => { get().addProduct(); get().addLog('Demo: Second Product', 'INFO'); } },
-        { delay: 10000, action: () => { get().addLog('Demo: Products Moving...', 'INFO'); } },
-        { delay: 14000, action: () => { get().injectFault(); get().addLog('Demo: Injecting Fault', 'WARNING'); } },
-        { delay: 17000, action: () => { get().clearFault(); get().addLog('Demo: Clearing Fault', 'INFO'); } },
-        { delay: 18500, action: () => { get().start(); get().addLog('Demo: Restarting', 'INFO'); } },
-        { delay: 20000, action: () => { get().addProduct(); } },
-        { delay: 24000, action: () => { get().triggerEmergency(); get().addLog('Demo: EMERGENCY!', 'EMERGENCY'); } },
-        { delay: 28000, action: () => { get().clearEmergency(); get().addLog('Demo: Emergency Cleared', 'INFO'); } },
-        { delay: 30000, action: () => { get().injectError(); get().addLog('Demo: Parity Error Injected', 'ERROR'); } },
-        { delay: 33000, action: () => {
-          set({ demoRunning: false });
-          get().addLog('AUTO DEMO COMPLETE', 'INFO');
-        }},
-      ];
+      set({
+        demoRunning: true,
+        demoStep: 1,
+        running: true,
+        paused: false,
+        demoPhaseTitle: 'PHASE 1: SYSTEM INITIALIZATION & CONVEYOR START',
+        demoPhaseDesc: 'Resetting state registers, arming safety interlocks, and starting drive motor.',
+      });
+      get().addLog('AUTO DEMO STARTED — Comprehensive Industrial Simulation Demonstration', 'INFO');
 
       let timers: ReturnType<typeof setTimeout>[] = [];
-      demoSequence.forEach((step, i) => {
-        const timer = setTimeout(() => {
-          if (get().demoRunning) {
-            set({ demoStep: i + 1 });
-            step.action();
-          }
-        }, step.delay);
-        timers.push(timer);
+
+      const schedule = (delay: number, fn: () => void) => {
+        const t = setTimeout(() => {
+          if (get().demoRunning) fn();
+        }, delay);
+        timers.push(t);
+      };
+
+      // Phase 1: Start conveyor
+      schedule(1000, () => {
+        get().start();
       });
 
-      set({ demoTimer: timers[0] }); // Store reference for cleanup
+      // Phase 2: Product 1 Entrance & Edge Count
+      schedule(2500, () => {
+        set({
+          demoStep: 2,
+          demoPhaseTitle: 'PHASE 2: PRODUCT INTAKE & OPTICAL EDGE DETECTION',
+          demoPhaseDesc: 'Package enters conveyor. Optical sensor detects rising edge, debounces pulse, counter increments.',
+        });
+        get().addProduct();
+      });
+
+      // Phase 3: Continuous Flow (Product 2)
+      schedule(6000, () => {
+        set({
+          demoStep: 3,
+          demoPhaseTitle: 'PHASE 3: CONTINUOUS PACKAGE FLOW',
+          demoPhaseDesc: 'Second package enters. Tracking physical product positions along the moving belt.',
+        });
+        get().addProduct();
+      });
+
+      // Phase 4: Position Station Arrival
+      schedule(10000, () => {
+        set({
+          demoStep: 4,
+          demoPhaseTitle: 'PHASE 4: POSITION SENSOR & SEQUENTIAL FSM',
+          demoPhaseDesc: 'Package reaches position inspection station (75% mark). FSM transitions into POSITION_CONTROL.',
+        });
+      });
+
+      // Phase 5: Motor Overload / Fault Trip
+      schedule(13500, () => {
+        set({
+          demoStep: 5,
+          demoPhaseTitle: 'PHASE 5: MOTOR OVERLOAD TRIP & SAFETY LOCKOUT',
+          demoPhaseDesc: 'Thermal overload fault injected. Priority encoder routes I2, FSM transitions to FAULT_STOP, motor shuts down.',
+        });
+        get().injectFault();
+      });
+
+      // Phase 6: Fault Clearance & Motor Re-engagement
+      schedule(17500, () => {
+        set({
+          demoStep: 6,
+          demoPhaseTitle: 'PHASE 6: FAULT CLEARANCE & SYSTEM RECOVERY',
+          demoPhaseDesc: 'Overload condition cleared by operator. Re-starting conveyor drive motor.',
+        });
+        get().clearFault();
+        setTimeout(() => get().start(), 600);
+      });
+
+      // Phase 7: Hardware Emergency Stop (Top Priority Override)
+      schedule(21500, () => {
+        set({
+          demoStep: 7,
+          demoPhaseTitle: 'PHASE 7: HARDWARE EMERGENCY E-STOP OVERRIDE',
+          demoPhaseDesc: 'E-STOP mushroom switch tripped! I3 takes absolute priority, forcing EMERGENCY_SAFE_STOP immediately.',
+        });
+        get().addProduct();
+        setTimeout(() => get().triggerEmergency(), 1200);
+      });
+
+      // Phase 8: Emergency Reset & Parity Error Check
+      schedule(26000, () => {
+        set({
+          demoStep: 8,
+          demoPhaseTitle: 'PHASE 8: PARITY ERROR INJECTION ON BUS',
+          demoPhaseDesc: 'E-STOP released. Single-bit corruption injected into transmitted digital word; syndrome checker trips.',
+        });
+        get().clearEmergency();
+        setTimeout(() => {
+          get().start();
+          get().injectError();
+        }, 800);
+      });
+
+      // Phase 9: Restoration to Nominal State
+      schedule(30500, () => {
+        set({
+          demoStep: 9,
+          demoPhaseTitle: 'PHASE 9: SYSTEM NOMINAL & VERIFIED',
+          demoPhaseDesc: 'Parity error cleared, new data syndrome verified, conveyor returned to healthy running mode.',
+        });
+        get().clearFault();
+        get().generateNewParityData();
+        get().start();
+      });
+
+      // Completion
+      schedule(34500, () => {
+        set({
+          demoRunning: false,
+          demoStep: 0,
+          demoPhaseTitle: '',
+          demoPhaseDesc: '',
+        });
+        get().addLog('AUTO DEMO COMPLETE — All 9 industrial control phases demonstrated successfully', 'INFO');
+      });
+
+      set({ demoTimers: timers });
     }, 100);
   },
 
   stopDemo: () => {
-    set({ demoRunning: false, demoStep: 0 });
+    const { demoTimers } = get();
+    demoTimers.forEach(t => clearTimeout(t));
+    set({
+      demoRunning: false,
+      demoStep: 0,
+      demoTimers: [],
+      demoPhaseTitle: '',
+      demoPhaseDesc: '',
+    });
     get().addLog('AUTO DEMO STOPPED', 'INFO');
   },
 

@@ -8,7 +8,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Text, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
 import { useSimStore } from '../simulation/simulationEngine';
-import { Camera, Eye, RotateCw } from 'lucide-react';
+import { Camera, Eye, RotateCw, RotateCcw, ZoomIn, ZoomOut, Play, Sparkles } from 'lucide-react';
 
 // ── Conveyor Belt ──────────────────────────────────────────
 function ConveyorBelt() {
@@ -573,44 +573,43 @@ function FactoryFloor() {
   );
 }
 
-// ── Camera Controller Helper ───────────────────────────────
-function CameraRig({ view }: { view: 'ISOMETRIC' | 'FRONT' | 'TOP' | 'SIDE' }) {
+// ── Camera Controller (Smooth Transition on View Change Only) ──
+function CameraRig({
+  targetPos,
+  targetLookAt,
+}: {
+  targetPos: THREE.Vector3 | null;
+  targetLookAt: THREE.Vector3;
+}) {
   const { camera } = useThree();
 
   useFrame(() => {
-    let targetPos = new THREE.Vector3(0, 3.5, 6.5);
-    if (view === 'FRONT') targetPos = new THREE.Vector3(0, 2.0, 5.5);
-    else if (view === 'TOP') targetPos = new THREE.Vector3(0, 8.5, 0.1);
-    else if (view === 'SIDE') targetPos = new THREE.Vector3(-6.5, 2.2, 0);
-
-    camera.position.lerp(targetPos, 0.08);
-    camera.lookAt(0, 0.5, 0);
+    if (targetPos) {
+      camera.position.lerp(targetPos, 0.08);
+      camera.lookAt(targetLookAt);
+    }
   });
 
   return null;
 }
 
 // ── Complete 3D Scene Assembly ─────────────────────────────
-function Scene({ cameraView }: { cameraView: 'ISOMETRIC' | 'FRONT' | 'TOP' | 'SIDE' }) {
+function Scene({
+  targetPos,
+}: {
+  targetPos: THREE.Vector3 | null;
+}) {
   const products = useSimStore(s => s.products);
   const productSensor = useSimStore(s => s.productSensor);
   const positionSensor = useSimStore(s => s.positionSensor);
-  const fault = useSimStore(s => s.fault);
 
   return (
     <>
-      <CameraRig view={cameraView} />
+      <CameraRig targetPos={targetPos} targetLookAt={new THREE.Vector3(0, 0.5, 0)} />
 
       {/* ── HIGH VISIBILITY STUDIO LIGHTING RIG ── */}
-      {/* High ambient baseline light: eliminates all pitch-black areas */}
       <ambientLight intensity={1.6} color="#f8fafc" />
-
-      {/* Daylight / Ground Bounce Light */}
-      <hemisphereLight
-        args={['#e0f2fe', '#334155', 1.4]}
-      />
-
-      {/* Primary Key Sunlight */}
+      <hemisphereLight args={['#e0f2fe', '#334155', 1.4]} />
       <directionalLight
         position={[6, 12, 8]}
         intensity={3.2}
@@ -619,15 +618,7 @@ function Scene({ cameraView }: { cameraView: 'ISOMETRIC' | 'FRONT' | 'TOP' | 'SI
         shadow-mapSize-height={2048}
         shadow-bias={-0.0001}
       />
-
-      {/* Secondary Fill Light from Rear Left */}
-      <directionalLight
-        position={[-8, 9, -6]}
-        intensity={2.2}
-        color="#bae6fd"
-      />
-
-      {/* Conveyor Top Spotlight for Crystal-Clear Product Tracking */}
+      <directionalLight position={[-8, 9, -6]} intensity={2.2} color="#bae6fd" />
       <pointLight position={[0, 4.5, 2]} intensity={2.5} distance={16} color="#ffffff" />
       <pointLight position={[-2.4, 2.5, 1]} intensity={1.8} distance={8} color="#38bdf8" />
       <pointLight position={[1.5, 2.5, 1]} intensity={1.8} distance={8} color="#4ade80" />
@@ -675,31 +666,99 @@ function Scene({ cameraView }: { cameraView: 'ISOMETRIC' | 'FRONT' | 'TOP' | 'SI
   );
 }
 
-// ── Exported Canvas Component ──────────────────────────────
+// ── Exported Canvas Component with Full Camera & Rotation Suite ──
 export default function Conveyor3DScene() {
   const [cameraView, setCameraView] = useState<'ISOMETRIC' | 'FRONT' | 'TOP' | 'SIDE'>('ISOMETRIC');
+  const [isAutoRotating, setIsAutoRotating] = useState<boolean>(false);
+  const [animTarget, setAnimTarget] = useState<THREE.Vector3 | null>(null);
   const controlsRef = useRef<any>(null);
 
-  const resetCamera = (view: 'ISOMETRIC' | 'FRONT' | 'TOP' | 'SIDE') => {
+  const demoRunning = useSimStore(s => s.demoRunning);
+  const demoStep = useSimStore(s => s.demoStep);
+  const demoPhaseTitle = useSimStore(s => s.demoPhaseTitle);
+  const demoPhaseDesc = useSimStore(s => s.demoPhaseDesc);
+
+  const setPresetView = (view: 'ISOMETRIC' | 'FRONT' | 'TOP' | 'SIDE') => {
     setCameraView(view);
+    let target = new THREE.Vector3(4.5, 3.5, 5.5);
+    if (view === 'FRONT') target = new THREE.Vector3(0, 2.0, 5.5);
+    else if (view === 'TOP') target = new THREE.Vector3(0, 9.0, 0.1);
+    else if (view === 'SIDE') target = new THREE.Vector3(-6.5, 2.0, 0);
+
+    setAnimTarget(target);
+    // After animation settles, clear animTarget so user has 100% free orbit & zoom control
+    setTimeout(() => {
+      setAnimTarget(null);
+      if (controlsRef.current) {
+        controlsRef.current.target.set(0, 0.5, 0);
+        controlsRef.current.update();
+      }
+    }, 450);
+  };
+
+  const zoomIn = () => {
     if (controlsRef.current) {
-      controlsRef.current.target.set(0, 0.5, 0);
-      controlsRef.current.update();
+      const controls = controlsRef.current;
+      controls.object.position.lerp(controls.target, 0.25);
+      controls.update();
     }
   };
 
+  const zoomOut = () => {
+    if (controlsRef.current) {
+      const controls = controlsRef.current;
+      const dir = controls.object.position.clone().sub(controls.target).normalize();
+      controls.object.position.add(dir.multiplyScalar(1.5));
+      controls.update();
+    }
+  };
+
+  const rotateBy = (angleRad: number) => {
+    if (controlsRef.current) {
+      const controls = controlsRef.current;
+      const offset = controls.object.position.clone().sub(controls.target);
+      const radius = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
+      const theta = Math.atan2(offset.x, offset.z) + angleRad;
+      offset.x = radius * Math.sin(theta);
+      offset.z = radius * Math.cos(theta);
+      controls.object.position.copy(controls.target).add(offset);
+      controls.update();
+    }
+  };
+
+  const resetCamera = () => {
+    setPresetView('ISOMETRIC');
+    setIsAutoRotating(false);
+  };
+
   return (
-    <div className="relative w-full h-full select-none bg-[#0b1120]">
-      {/* ── CAMERA VIEW CONTROLS TOOLBAR (BOTTOM RIGHT TO PREVENT OVERLAP) ── */}
-      <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1 glass-panel p-1.5 border border-slate-700/60 shadow-xl bg-slate-900/90 rounded-lg">
-        <span className="text-[10px] text-slate-400 font-mono px-1 flex items-center gap-1 hidden sm:flex">
+    <div className="relative w-full h-full select-none bg-[#0b1120] overflow-hidden">
+      {/* ── LIVE DEMO NARRATION BANNER (DISPLAYS DURING AUTO DEMO) ── */}
+      {demoRunning && demoPhaseTitle && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 w-11/12 max-w-lg glass-panel p-3 border border-cyan-500/50 shadow-2xl bg-slate-950/95 rounded-xl backdrop-blur-xl animate-in fade-in slide-in-from-top-3">
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-500/40 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              DEMO STEP {demoStep} / 9
+            </span>
+            <span className="text-[10px] font-mono text-slate-400">Live CEP Simulation</span>
+          </div>
+          <h4 className="text-xs font-bold text-white tracking-wide">{demoPhaseTitle}</h4>
+          <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">{demoPhaseDesc}</p>
+        </div>
+      )}
+
+      {/* ── PROFESSIONAL 3D NAVIGATION & CAMERA CONTROLS DOCK ── */}
+      <div className="absolute bottom-3 right-3 z-10 flex flex-wrap items-center gap-1 glass-panel p-1.5 border border-slate-700/70 shadow-2xl bg-slate-950/90 rounded-xl backdrop-blur-md">
+        {/* Preset Angles */}
+        <span className="text-[10px] text-slate-400 font-mono px-1 flex items-center gap-1 hidden md:flex">
           <Camera size={12} className="text-cyan-400" /> VIEW:
         </span>
         {(['ISOMETRIC', 'FRONT', 'TOP', 'SIDE'] as const).map(v => (
           <button
             key={v}
-            onClick={() => resetCamera(v)}
-            className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono transition-all ${
+            onClick={() => setPresetView(v)}
+            className={`px-2 py-1 rounded text-[10px] font-bold font-mono transition-all ${
               cameraView === v
                 ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
                 : 'text-slate-300 hover:text-white hover:bg-slate-800'
@@ -708,31 +767,83 @@ export default function Conveyor3DScene() {
             {v}
           </button>
         ))}
+
+        <div className="w-[1px] h-4 bg-slate-700 mx-0.5" />
+
+        {/* Zoom In & Zoom Out Buttons */}
         <button
-          onClick={() => resetCamera('ISOMETRIC')}
-          className="p-1 text-slate-400 hover:text-cyan-400 transition-colors ml-1"
-          title="Reset Orbit Camera"
+          onClick={zoomIn}
+          className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-cyan-400 transition-colors"
+          title="Zoom In (+)"
         >
-          <RotateCw size={12} />
+          <ZoomIn size={13} />
+        </button>
+        <button
+          onClick={zoomOut}
+          className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-cyan-400 transition-colors"
+          title="Zoom Out (-)"
+        >
+          <ZoomOut size={13} />
+        </button>
+
+        {/* Rotate Left & Rotate Right Buttons */}
+        <button
+          onClick={() => rotateBy(-Math.PI / 6)}
+          className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-cyan-400 transition-colors"
+          title="Rotate Left 30°"
+        >
+          <RotateCcw size={13} />
+        </button>
+        <button
+          onClick={() => rotateBy(Math.PI / 6)}
+          className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-cyan-400 transition-colors"
+          title="Rotate Right 30°"
+        >
+          <RotateCw size={13} />
+        </button>
+
+        {/* Auto Orbit Toggle Button */}
+        <button
+          onClick={() => setIsAutoRotating(!isAutoRotating)}
+          className={`px-2 py-1 rounded text-[10px] font-bold font-mono transition-all flex items-center gap-1 ${
+            isAutoRotating
+              ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+              : 'bg-slate-900 text-slate-300 hover:text-white hover:bg-slate-800'
+          }`}
+          title="Toggle Auto 360° Rotation"
+        >
+          <RotateCw size={11} className={isAutoRotating ? 'animate-spin' : ''} />
+          <span>AUTO</span>
+        </button>
+
+        {/* Reset Camera View */}
+        <button
+          onClick={resetCamera}
+          className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-cyan-400 transition-colors"
+          title="Reset Camera View to Default"
+        >
+          <RotateCw size={13} />
         </button>
       </div>
 
       {/* ── THREE.JS CANVAS ── */}
       <Canvas
         shadows
-        camera={{ position: [0, 3.5, 6.5], fov: 48 }}
+        camera={{ position: [4.5, 3.5, 5.5], fov: 48 }}
         gl={{ antialias: true, alpha: false, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.25 }}
         style={{ background: '#0b1120', width: '100%', height: '100%' }}
         dpr={[1, 2]}
       >
-        <Scene cameraView={cameraView} />
+        <Scene targetPos={animTarget} />
         <OrbitControls
           ref={controlsRef}
           enableDamping
-          dampingFactor={0.08}
-          minDistance={1.8}
-          maxDistance={18}
+          dampingFactor={0.07}
+          minDistance={1.2}
+          maxDistance={25}
           maxPolarAngle={Math.PI / 2.05}
+          autoRotate={isAutoRotating}
+          autoRotateSpeed={2.0}
           target={[0, 0.5, 0]}
         />
       </Canvas>

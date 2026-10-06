@@ -10,10 +10,10 @@ export default function ControlPanel() {
     fsmState, motorEnabled, conveyorRunning, emergency, fault,
     alarmActive, errorDetected, productCount, productSensor,
     positionSensor, selectedEvent, clock, running, paused, speed,
-    demoRunning, products,
+    demoRunning, products, autoFeed,
     start, stop, reset, addProduct, triggerEmergency, clearEmergency,
-    injectFault, clearFault, setSpeed, togglePause, stepClock,
-    startDemo, stopDemo,
+    injectFault, clearFault, injectError, setSpeed, togglePause, stepClock,
+    startDemo, stopDemo, toggleAutoFeed, triggerCollision,
   } = useSimStore();
 
   return (
@@ -80,18 +80,36 @@ export default function ControlPanel() {
             + PRODUCT
           </button>
         </div>
+        <div className="mt-2">
+          <button
+            onClick={toggleAutoFeed}
+            className={`btn w-full justify-center text-[11px] py-1.5 ${
+              autoFeed ? 'btn-blue border-cyan-500 text-cyan-300' : ''
+            }`}
+          >
+            📦 CONTINUOUS FEED: {autoFeed ? 'ACTIVE [ON]' : 'OFF'}
+          </button>
+        </div>
       </div>
 
-      {/* Fault / Emergency */}
+      {/* Fault / Overload & Emergency Testing */}
       <div className="glass-panel p-3">
-        <div className="panel-header">FAULT / EMERGENCY</div>
+        <div className="panel-header">FAULT / OVERLOAD & SAFETY TESTING</div>
         <div className="flex flex-col gap-2 mt-2">
           <div className="grid grid-cols-2 gap-2">
             <button className="btn btn-amber" onClick={injectFault} disabled={fault}>
-              ⚡ FAULT
+              ⚡ OVERLOAD
             </button>
             <button className="btn btn-green" onClick={clearFault} disabled={!fault}>
               ✓ CLR FAULT
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button className="btn btn-red" onClick={injectError} disabled={errorDetected}>
+              🛡 PARITY ERROR
+            </button>
+            <button className="btn btn-blue" onClick={triggerCollision}>
+              💥 TEST PRIORITY
             </button>
           </div>
           <div className="flex items-center justify-center gap-4 mt-1">
