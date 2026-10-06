@@ -25,6 +25,13 @@ const MAX_SIGNAL_HISTORY = 200;
 const MAX_LOGS = 500;
 const POSITION_CONTROL_TICKS = 5;
 
+// ── Overload & Safety Thresholds ──
+const MAX_PRODUCTS_ON_BELT = 8;           // Overload triggers if exceeded
+const MOTOR_OVERHEAT_TICKS = 600;         // Motor warning after 600 ticks (~60s)
+const MOTOR_CRITICAL_TEMP_TICKS = 900;    // Motor auto-fault after 900 ticks (~90s)
+const BELT_JAM_MIN_DISTANCE = 0.04;       // Products closer than this = jam
+const MOTOR_COOLDOWN_RATE = 2;            // Heat reduction per tick when motor off
+
 // ── Store Interface ────────────────────────────────────────
 interface SimulationStore {
   // ── Digital Inputs ──
@@ -60,6 +67,15 @@ interface SimulationStore {
 
   // ── Alarm ──
   alarmActive: boolean;
+
+  // ── System Health ──
+  motorHeat: number;             // 0-100% heat level
+  motorRunTicks: number;         // How long motor has been running
+  overloadDetected: boolean;     // Too many products
+  beltJamDetected: boolean;      // Products jammed
+  motorOverheat: boolean;        // Motor temperature warning
+  systemHealth: 'NOMINAL' | 'WARNING' | 'CRITICAL' | 'FAULT';  // Overall health
+  lastFaultReason: string;       // Reason for last fault
 
   // ── Clock ──
   clock: number;
@@ -159,6 +175,14 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
 
   alarmActive: false,
 
+  motorHeat: 0,
+  motorRunTicks: 0,
+  overloadDetected: false,
+  beltJamDetected: false,
+  motorOverheat: false,
+  systemHealth: 'NOMINAL',
+  lastFaultReason: '',
+
   clock: 0,
   running: false,
   paused: false,
@@ -235,10 +259,89 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
       return updated;
     });
 
+    // ══════════════════════════════════════════════════════
+    // ── 2.5. AUTOMATIC FAULT DETECTION ENGINE ──
+    // ══════════════════════════════════════════════════════
+    let autoFault = false;
+    let autoFaultReason = state.lastFaultReason;
+    let overloadDetected = state.overloadDetected;
+    let beltJamDetected = state.beltJamDetected;
+    let motorOverheat = state.motorOverheat;
+    let motorHeat = state.motorHeat;
+    let motorRunTicks = state.motorRunTicks;
+
+    // ── (A) PRODUCT OVERLOAD DETECTION ──
+    if (products.length > MAX_PRODUCTS_ON_BELT && !state.fault && !state.emergency) {
+      overloadDetected = true;
+      autoFault = true;
+      autoFaultReason = `CONVEYOR OVERLOAD: ${products.length} products exceed max capacity (${MAX_PRODUCTS_ON_BELT})`;
+    } else if (products.length <= MAX_PRODUCTS_ON_BELT) {
+      overloadDetected = false;
+    }
+
+    // ── (B) BELT JAM DETECTION ──
+    // Check if any two products are too close together on the belt
+    const sortedProducts = [...products].sort((a, b) => a.position - b.position);
+    let jamDetected = false;
+    for (let i = 1; i < sortedProducts.length; i++) {
+      const gap = sortedProducts[i].position - sortedProducts[i - 1].position;
+      if (gap < BELT_JAM_MIN_DISTANCE && gap >= 0) {
+        jamDetected = true;
+        break;
+      }
+    }
+    if (jamDetected && !state.fault && !state.emergency && products.length >= 3) {
+      beltJamDetected = true;
+      autoFault = true;
+      autoFaultReason = 'BELT JAM: Products collision detected — insufficient spacing';
+    } else if (!jamDetected) {
+      beltJamDetected = false;
+    }
+
+    // ── (C) MOTOR OVERHEAT SIMULATION ──
+    if (state.motorEnabled) {
+      motorRunTicks = motorRunTicks + 1;
+      motorHeat = Math.min(100, (motorRunTicks / MOTOR_CRITICAL_TEMP_TICKS) * 100);
+
+      // Warning threshold
+      if (motorRunTicks >= MOTOR_OVERHEAT_TICKS && !motorOverheat) {
+        motorOverheat = true;
+      }
+
+      // Critical auto-fault threshold
+      if (motorRunTicks >= MOTOR_CRITICAL_TEMP_TICKS && !state.fault && !state.emergency) {
+        autoFault = true;
+        autoFaultReason = `MOTOR OVERHEAT: Temperature critical (${motorHeat.toFixed(0)}%) — thermal protection tripped`;
+      }
+    } else {
+      // Motor cooling when off
+      motorRunTicks = Math.max(0, motorRunTicks - MOTOR_COOLDOWN_RATE);
+      motorHeat = Math.min(100, Math.max(0, (motorRunTicks / MOTOR_CRITICAL_TEMP_TICKS) * 100));
+      if (motorRunTicks < MOTOR_OVERHEAT_TICKS) {
+        motorOverheat = false;
+      }
+    }
+
+    // ── Apply auto-fault if detected ──
+    let currentFault = state.fault;
+    if (autoFault && !state.fault) {
+      currentFault = true;
+    }
+
+    // ── Compute overall system health ──
+    let systemHealth: 'NOMINAL' | 'WARNING' | 'CRITICAL' | 'FAULT' = 'NOMINAL';
+    if (state.emergency || (currentFault && (overloadDetected || beltJamDetected))) {
+      systemHealth = 'FAULT';
+    } else if (currentFault || state.errorDetected) {
+      systemHealth = 'CRITICAL';
+    } else if (motorOverheat || products.length > MAX_PRODUCTS_ON_BELT - 2) {
+      systemHealth = 'WARNING';
+    }
+
     // ── 3. Priority Logic ──
     const priorityResult = evaluatePriority({
       emergency: state.emergency,
-      fault: state.fault,
+      fault: currentFault,
       position: positionSensor,
       product: productSensor,
     });
@@ -282,6 +385,30 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
 
     // ── 7. Logging ──
     const newLogs: LogEntry[] = [];
+
+    // Log auto-fault events
+    if (autoFault && !state.fault) {
+      newLogs.push({
+        timestamp: Date.now(), clock: newClock,
+        message: `⚠ AUTO-FAULT: ${autoFaultReason}`, type: 'ERROR',
+      });
+    }
+
+    // Log motor overheat warnings
+    if (motorOverheat && !state.motorOverheat) {
+      newLogs.push({
+        timestamp: Date.now(), clock: newClock,
+        message: `⚠ MOTOR TEMP WARNING: Heat level ${motorHeat.toFixed(0)}% — approaching thermal limit`, type: 'WARNING',
+      });
+    }
+
+    // Log overload warnings at threshold
+    if (products.length === MAX_PRODUCTS_ON_BELT && !state.overloadDetected && !overloadDetected) {
+      newLogs.push({
+        timestamp: Date.now(), clock: newClock,
+        message: `⚠ BELT CAPACITY AT LIMIT: ${products.length}/${MAX_PRODUCTS_ON_BELT} products — do not exceed`, type: 'WARNING',
+      });
+    }
 
     if (fsmResult.transition && fsmResult.nextState !== state.fsmState) {
       newLogs.push({
@@ -328,7 +455,7 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
       CLOCK: newClock % 2,
       PRODUCT: productSensor ? 1 : 0,
       POSITION: positionSensor ? 1 : 0,
-      FAULT: state.fault ? 1 : 0,
+      FAULT: currentFault ? 1 : 0,
       EMERGENCY: state.emergency ? 1 : 0,
       MOTOR_ENABLE: motorEnabled ? 1 : 0,
       COUNTER_PULSE: counterResult.pulse ? 1 : 0,
@@ -345,6 +472,7 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
       products,
       productSensor,
       positionSensor,
+      fault: currentFault,
       selectedEvent: priorityResult.selectedEvent,
       priorityInputs: priorityResult.inputs,
       previousFsmState: state.fsmState,
@@ -361,6 +489,14 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
       logs,
       startRequested: false,
       stopRequested: false,
+      // System health metrics
+      motorHeat,
+      motorRunTicks,
+      overloadDetected,
+      beltJamDetected,
+      motorOverheat,
+      systemHealth,
+      lastFaultReason: autoFault ? autoFaultReason : state.lastFaultReason,
     });
   },
 
@@ -426,6 +562,14 @@ export const useSimStore = create<SimulationStore>((set, get) => ({
       autoFeed: false,
       testRunning: false,
       testTimer: null,
+      // Reset health metrics
+      motorHeat: 0,
+      motorRunTicks: 0,
+      overloadDetected: false,
+      beltJamDetected: false,
+      motorOverheat: false,
+      systemHealth: 'NOMINAL',
+      lastFaultReason: '',
     });
     // Add a log after reset
     setTimeout(() => get().addLog('SYSTEM RESET COMPLETE', 'INFO'), 10);
