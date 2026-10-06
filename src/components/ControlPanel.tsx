@@ -99,7 +99,7 @@ export default function ControlPanel() {
               className={`btn-emergency ${emergency ? 'active' : ''}`}
               onClick={emergency ? clearEmergency : triggerEmergency}
             >
-              {emergency ? 'CLR' : 'E-STOP'}
+              {emergency ? 'RESET' : 'E-STOP'}
             </button>
           </div>
         </div>
